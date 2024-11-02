@@ -1,0 +1,110 @@
+# Установка необходимых библиотек
+pip install vk_api notebook scikit-learn
+import vk_api	
+from vk_api.utils import get_random_id
+from vk_api.longpoll import VkLongPoll, VkEventType
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+import pandas as pd
+from transformers import pipeline
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from transformers import pipeline
+
+# Токен доступа ВКонтакте (получить в настройках приложения)
+token = 'ваш_токен_доступа'
+
+# ID группы, из которой будут собираться посты (заменить на нужный ID)
+group_id = '123456789'
+
+# Создание объекта VkApi
+vk = vk_api.VkApi(token=token)
+
+# Создание объекта VkLongPoll для получения постов
+longpoll = VkLongPoll(vk)
+
+# Список категорий постов
+categories = ['новости', 'реклама', 'мемы']
+
+# Сбор постов из группы (с помощью API)
+def get_wall_posts(group_id, count=100):
+    """Получает посты с группы ВКонтакте."""
+    posts = []
+    offset = 0
+    while True:
+        try:
+            response = vk.method('wall.get', {'owner_id': -group_id, 'count': count, 'offset': offset})
+            posts.extend(response['items'])
+            offset += count
+            if len(response['items']) < count:
+                break
+        except vk_api.exceptions.ApiError as e:
+            print(f"Ошибка API: {e}")
+            time.sleep(1)  # Пауза перед повторной попыткой
+            continue
+    return posts
+
+# Создание DataFrame для хранения данных
+posts_data = get_wall_posts(group_id)
+df = pd.DataFrame(posts_data)
+
+# Выбор нужных столбцов
+df = df[['id', 'text', 'owner_id', 'date', 'likes', 'reposts']]
+
+# Предобработка текста
+def preprocess_text(text):
+    """Предобработка текста: удаление стоп-слов, пунктуации, приведение к нижнему регистру."""
+    import nltk
+    nltk.download('stopwords')
+    from nltk.corpus import stopwords
+    from nltk.stem import WordNetLemmatizer
+
+    stop_words = set(stopwords.words('russian'))
+    lemmatizer = WordNetLemmatizer()
+    text = text.lower()  # Приведение к нижнему регистру
+    text = ''.join(c for c in text if c.isalnum() or c.isspace())  # Удаление пунктуации
+    words = text.split()
+    words = [lemmatizer.lemmatize(word) for word in words if word not in stop_words]
+    return ' '.join(words)
+
+df['text'] = df['text'].apply(preprocess_text)
+
+# Автоматическая разметка категорий с помощью модели Zero-Shot Classification
+classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+df['category'] = df['text'].apply(lambda x: classifier(x, candidate_labels=categories, multi_label=False)['labels'][0])
+
+# Добавление дополнительных признаков
+df['likes_count'] = df['likes']['count']
+df['reposts_count'] = df['reposts']['count']
+df['day_of_week'] = df['date'].dt.dayofweek
+df['hour_of_day'] = df['date'].dt.hour
+
+
+# Разделение данных на обучающую и тестовую выборки
+X = df[['text', 'likes_count', 'reposts_count', 'day_of_week', 'hour_of_day']]
+y = df['category'].values
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Извлечение признаков с помощью TF-IDF
+vectorizer = TfidfVectorizer()
+X_train_tfidf = vectorizer.fit_transform(X_train['text'])
+X_test_tfidf = vectorizer.transform(X_test['text'])
+
+# Создание матрицы признаков с учетом дополнительных признаков
+X_train_features = pd.DataFrame(X_train_tfidf.toarray(), columns=vectorizer.get_feature_names_out())
+X_train_features = pd.concat([X_train_features, X_train[['likes_count', 'reposts_count', 'day_of_week', 'hour_of_day']]], axis=1)
+
+X_test_features = pd.DataFrame(X_test_tfidf.toarray(), columns=vectorizer.get_feature_names_out())
+X_test_features = pd.concat([X_test_features, X_test[['likes_count', 'reposts_count', 'day_of_week', 'hour_of_day']]], axis=1)
+
+# Обучение модели логистической регрессии
+model = LogisticRegression()
+model.fit(X_train_features, y_train)
+
+# Предсказание категорий для тестовой выборки
+y_pred = model.predict(X_test_features)
+
+# Оценка точности модели
+accuracy = accuracy_score(y_test, y_pred)
+print(f"Точность модели: {accuracy}")
