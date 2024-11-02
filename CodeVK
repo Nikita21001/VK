@@ -1,5 +1,5 @@
 # Установка необходимых библиотек
-pip install vk_api notebook scikit-learn
+pip install vk_api jupyter scikit-learn transformers nltk pandas
 import vk_api	
 from vk_api.utils import get_random_id
 from vk_api.longpoll import VkLongPoll, VkEventType
